@@ -286,7 +286,7 @@ const ProviderSpecificFields: React.FC<ProviderSpecificFieldsProps> = ({ selecte
         </p>
       )}
       {allFields.map((field) => (
-        <React.Fragment key={field.key}>
+        <React.Fragment key={`${selectedProvider ?? ""}-${field.key}`}>
           <MountedFormField
             label={field.tooltip ? labelWithHint(field.label, field.tooltip) : field.label}
             name={field.key}
