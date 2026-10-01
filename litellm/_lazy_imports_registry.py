@@ -343,6 +343,7 @@ LLM_CONFIG_NAMES: Final = (
     "OVHCloudEmbeddingConfig",
     "CometAPIEmbeddingConfig",
     "LemonadeChatConfig",
+    "OpenCodeChatConfig",
     "SnowflakeEmbeddingConfig",
     "AmazonNovaChatConfig",
     "SonioxAudioTranscriptionConfig",
@@ -1270,6 +1271,7 @@ _LLM_CONFIGS_IMPORT_MAP: Final = {
         "CometAPIEmbeddingConfig",
     ),
     "LemonadeChatConfig": (".llms.lemonade.chat.transformation", "LemonadeChatConfig"),
+    "OpenCodeChatConfig": (".llms.opencode.chat.transformation", "OpenCodeChatConfig"),
     "SnowflakeEmbeddingConfig": (
         ".llms.snowflake.embedding.transformation",
         "SnowflakeEmbeddingConfig",

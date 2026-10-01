@@ -332,6 +332,7 @@ WEBSOCKET_CLOSE_REASON_MAX_BYTES: Final = 123
 
 DEEPGRAM_DEFAULT_API_BASE: Final = "https://api.deepgram.com/v1"
 NADIR_DEFAULT_API_BASE: Final = "https://api.getnadir.com/v1"
+OPENCODE_ZEN_BASE_URL: Final = "https://opencode.ai/zen/v1"
 DEEPGRAM_LISTEN_DEFAULT_MODEL: Final = "nova-3"
 
 BEDROCK_REALTIME_PENDING_SESSION_UPDATE_SCOPE_KEY: Final = "litellm.bedrock_realtime.pending_session_update"
@@ -909,6 +910,7 @@ openai_compatible_endpoints: Final[list] = [
     "api.groq.com/openai/v1",
     "https://integrate.api.nvidia.com/v1",
     NADIR_DEFAULT_API_BASE,
+    OPENCODE_ZEN_BASE_URL,
     "api.deepseek.com/v1",
     "api.together.ai/v1",
     "api.together.xyz/v1",
@@ -1025,6 +1027,7 @@ openai_compatible_providers: Final[list] = [
     "scx-ai",
     "prism",
     "sail",
+    "opencode",
 ]
 
 OPENAI_AUDIO_TRANSCRIPTION_PROVIDERS: Final = frozenset({"openai"} | frozenset(openai_compatible_providers))

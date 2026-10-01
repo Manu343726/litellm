@@ -4148,6 +4148,7 @@ class LlmProviders(str, Enum):
     META = "meta"
     SAIL = "sail"
     LITELLM_AGENT = "litellm_agent"
+    OPENCODE = "opencode"
     CURSOR = "cursor"
     BEDROCK_MANTLE = "bedrock_mantle"
     GDC = "gdc"

@@ -8561,7 +8561,14 @@ class ProviderConfigManager:
                 lambda: litellm.GDCGeminiConfig(),
                 False,
             ),
+            LlmProviders.OPENCODE: (ProviderConfigManager._get_opencode_chat_config, False),
         }
+
+    @staticmethod
+    def _get_opencode_chat_config() -> BaseConfig:
+        from litellm.llms.opencode.chat.transformation import OpenCodeChatConfig
+
+        return OpenCodeChatConfig()
 
     @staticmethod
     def _get_azure_config(model: str, base_model: str | None = None) -> BaseConfig:

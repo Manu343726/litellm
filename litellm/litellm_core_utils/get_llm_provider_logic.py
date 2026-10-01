@@ -902,6 +902,9 @@ def _get_openai_compatible_provider_info(
             api_base,
             dynamic_api_key,
         ) = litellm.LemonadeChatConfig()._get_openai_compatible_provider_info(api_base, api_key)
+    elif custom_llm_provider == "opencode":
+        api_base = litellm.OpenCodeChatConfig.get_api_base(api_base)  # rebind-ok: chain resolves in place
+        dynamic_api_key = litellm.OpenCodeChatConfig.get_api_key(api_key)  # rebind-ok: chain resolves in place
     elif custom_llm_provider == "clarifai":
         (
             api_base,

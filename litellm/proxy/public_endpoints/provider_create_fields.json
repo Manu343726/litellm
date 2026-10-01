@@ -3656,5 +3656,33 @@
       }
     ],
     "default_model_placeholder": "cursor/claude-4-sonnet"
+  },
+  {
+    "provider": "OPENCODE",
+    "provider_display_name": "OpenCode",
+    "litellm_provider": "opencode",
+    "credential_fields": [
+      {
+        "key": "api_key",
+        "label": "API Key",
+        "placeholder": "sk-...",
+        "tooltip": "An OpenCode Zen API key. One credential is one account; give each account its own credential so its models stay separate deployments.",
+        "required": true,
+        "field_type": "password",
+        "options": null,
+        "default_value": null
+      },
+      {
+        "key": "api_base",
+        "label": "API Base",
+        "placeholder": "https://opencode.ai/zen/v1",
+        "tooltip": "Must keep the /v1 suffix. The gateway appends /chat/completions to this value, and a base without /v1 produces a non-retryable 404 that puts the deployment into a long cooldown.",
+        "required": false,
+        "field_type": "text",
+        "options": null,
+        "default_value": "https://opencode.ai/zen/v1"
+      }
+    ],
+    "default_model_placeholder": "opencode/<account>/big-pickle"
   }
 ]

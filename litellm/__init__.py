@@ -2179,6 +2179,9 @@ if TYPE_CHECKING:
     from .llms.lemonade.chat.transformation import (
         LemonadeChatConfig as LemonadeChatConfig,
     )
+    from .llms.opencode.chat.transformation import (
+        OpenCodeChatConfig as OpenCodeChatConfig,
+    )
     from .llms.snowflake.embedding.transformation import (
         SnowflakeEmbeddingConfig as SnowflakeEmbeddingConfig,
     )
