@@ -521,6 +521,11 @@ deployment row**, not hardcoded. The topology, naming, permissions, and supervis
 identical either way. Deliberately left as a per-deployment choice rather than blocking on the
 answer.
 
+Related but distinct: the free tier being volume-gated rather than credential-gated is the
+same observation that makes egress rotation worth designing (§6). Whether that volume limit
+is per-IP is the throughput question; whether bans happen at all is a separate question that
+blocks the egress build, raised in §6.5.
+
 Second open question, lower stakes: whether the fleet supervisor should run in the **gunicorn
 master** (the pgbouncer and reaper precedent, one owner by construction, no Redis lease
 in-cluster) or in a worker with a `PodLockManager` lease. The master placement is recommended
@@ -528,7 +533,154 @@ because N workers each spawning the same child is a port race and the loser is n
 
 ---
 
-## 6. What has to be built
+## 6. Egress: VPN ingress selection
+
+**Status: designed, not started. Blocked on the questions in §6.5.**
+
+The requirement, as stated: because IP-based banning is a possibility, allow configuring a
+VPN service account (NordVPN, Cloudflare, and so on) as ingress, selecting from the
+account's available locations (UK, France, ...), and picking one per allocation under a
+configurable policy (fixed, random, least-used, ...).
+
+### 6.1 The constraint that shapes everything else: egress is per-instance
+
+Everything else in this design routes at request time. Egress cannot. An opencode instance
+has one `$HOME`, one process, and one TCP path to Zen, so its outbound IP is fixed when the
+process starts and cannot change without a restart.
+
+So "the allocator picks an ingress" cannot mean the router picks one per call. It has to mean
+**the supervisor binds an egress to an instance when it allocates that instance, and the
+binding holds for the instance's lifetime.**
+
+That makes an ingress policy a **scheduler input, not a routing strategy**.
+`RoutingStrategy` (`litellm/types/router.py:1012-1018`) has six members and every one picks a
+*deployment* per request; a `vpn-egress` strategy there would be a category error, because
+there is nothing to select at request time.
+
+```
+  per REQUEST                                   per ALLOCATION
+  (Router picks one)                            (Supervisor picks one)
+  ┌──────────────────────┐                      ┌──────────────────────┐
+  │ least-busy           │                      │ egress policy        │
+  │ latency-based        │                      │   fixed | random     │
+  │ cost-based           │                      │   least-loaded       │
+  │ usage-based-routing  │                      │   round-robin        │
+  │ provider-budget      │                      │   weighted           │
+  └──────────────────────┘                      └──────────┬───────────┘
+                                                     │ binds
+     opencode/team-a/big-pickle ─┐                     │
+     opencode/personal/gpt-5  ──┤                     ▼
+                                  │              ┌────────────┐
+     both hit the SAME instance, │              │ instance A │
+     therefore the SAME egress   │              │  -> UK VPN │
+                                  │              └────────────┘
+```
+
+### 6.2 What exists to build on: almost nothing, but one good seam
+
+Verified absences, worth recording so nobody goes looking:
+
+- **No egress concept anywhere.** No `vpn`, `egress`, `socks`, or `wireguard` in
+  `litellm/types/` or `litellm/constants.py`. The only `proxy_url` hit is in a redaction
+  denylist (`constants.py:1992`), i.e. treated as a secret to hide rather than a feature.
+- **No per-deployment proxy plumbing.** `GenericLiteLLMParams` (`litellm/types/router.py:381-390`)
+  has no proxy or client field, and no provider config in `litellm/llms/` threads a proxy
+  through its httpx client.
+- **No concurrent-tunnel support from any mainstream client.** NordVPN and Cloudflare WARP
+  each maintain **one tunnel at a time**. "Multiple ingress locations from one account" is
+  not a property they offer; several egress IPs concurrently means several client processes
+  or several network namespaces.
+
+The one seam that makes this tractable: **the prototype already builds a per-instance env
+dict** from `os.environ` plus overrides (`fleet_api.py:245-259`: `HOME`,
+`OPENCODE_SERVER_PASSWORD`, `OPENCODE_DISABLE_TOOLS`, `OPENCODE_PROXY_REQUEST_TIMEOUT_MS`,
+and more). Egress is very likely delivered by an env var (`HTTPS_PROXY`, or a
+WireGuard-style `TUNNEL_*`), so this is a few keys in a dict that already exists.
+
+The closest existing pattern for a "least-used" policy is `least_busy`
+(`litellm/router_strategy/least_busy.py`), which counts in-flight requests per deployment
+against a TTL'd counter. Useful for the counting idiom, wrong layer for the decision itself.
+
+### 6.3 Proposed design: a shared pool plus a scheduler policy
+
+Two layers, because they have genuinely different lifetimes.
+
+**Layer 1, egress pool: shared and long-lived, one entry per location.**
+
+```
+┌─ Egress pool (shared, NOT per instance) ──────────────────────────────┐
+│                                                                        │
+│  egress-uk    VPN client / tunnel iface ──▶  UK IP 203.0.113.7       │
+│  egress-fr    VPN client / tunnel iface ──▶  FR IP 198.51.100.22     │
+│  egress-de    VPN client / tunnel iface ──▶  DE IP 192.0.2.44        │
+│                                                                        │
+│  health = is the tunnel up AND is the observed egress IP the expected│
+└────────────────────────────────────────────────────────────────────────┘
+             │ bound at spawn time, never changes
+             ▼
+┌─ Instances (one per (account, model)) ────────────────────────────────┐
+│  team-a/gpt-5      $HOME=A  HTTPS_PROXY=egress-uk  ──▶ UK IP         │
+│  personal/gpt-5    $HOME=B  HTTPS_PROXY=egress-fr  ──▶ FR IP         │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+Instances point at a **local** proxy or interface name, never at the VPN client directly. Each
+instance's config stays a plain string, and the pool can swap the real endpoint underneath
+without touching any instance.
+
+**Layer 2, selection policy, evaluated once per allocation.**
+
+| Policy | Rule | Needs |
+|---|---|---|
+| `fixed` | always the configured location | nothing |
+| `round-robin` | next in rotation per allocation | counter |
+| `random` | uniform over healthy locations | nothing |
+| `least-loaded` | fewest in-flight requests, like `least_busy` but keyed on location | TTL counter |
+| `weighted` | per-location weights honouring capacity limits | weights |
+| `failover` | preferred location, next healthy on failure | health |
+
+Every policy is a pure function of `(locations, health, counters) -> location`. Following this
+repo's conventions that means a tagged union plus `match`, a `Protocol` for the health
+source, and no I/O inside the decision, so the policies are unit-testable with no VPN running
+and no network access.
+
+### 6.4 Why this should not ship inside the opencode feature
+
+**It is not the same problem.** Egress selection is infrastructure any provider could want,
+any deployment could route through, and any admin UI would want to see. Encapsulating it in
+`litellm/llms/opencode/` makes it unavailable to the other ~70 providers, which is a strange
+home for a capability whose only interesting property is being provider-agnostic. If it goes
+in, it wants its own module with a per-deployment `egress_ref`, with opencode as first
+consumer.
+
+**The feature it protects may not need it.** The field report's evidence is that the free tier
+is **volume-gated, not credential-gated**. Volume limiting and IP banning are different
+behaviours: a rate limit is a throughput ceiling that egress diversity genuinely helps with,
+since load spreads across N IPs. A ban is a punishment, and rotating IPs to shed one is
+evasion rather than capacity planning, with a materially different legal and ToS character.
+Happy to build the first. The second needs to be stated explicitly before building anything
+aimed at it.
+
+**Provider support is the real cost.** Concurrent tunnels per location means network
+namespaces, several client processes, or a sidecar per location. That is sysadmin surface
+area litellm has no precedent for, and it fails invisibly: a tunnel that silently routes
+nowhere still answers TCP.
+
+### 6.5 Blocking questions
+
+1. **Is the goal throughput (spreading load past a per-IP rate limit) or ban avoidance?** The
+   first is buildable as designed. The second changes what should be built.
+2. **Are concurrent tunnels per location required, or is sequential acceptable?** Sequential
+   means one egress IP at a time and so no diversity while a location is active, which
+   defeats the purpose. Concurrent is the infrastructure-heavy answer.
+3. **Which providers, concretely?** Cloudflare WARP and NordVPN have materially different
+   integration surfaces (a local daemon on a fixed vs. chosen endpoint vs. a CLI that
+   connects and disconnects). Better to design against one real provider than three
+   hypotheticals.
+
+---
+
+## 7. What has to be built
 
 | Piece | Status |
 |---|---|
@@ -543,6 +695,7 @@ because N workers each spawning the same child is a port race and the loser is n
 | Supervisor: reconcile, spawn, adopt by pid, surgical stop | **new**, mirrors `PgBouncerProcess` |
 | Lifecycle vs readiness health | **new**; nothing distinguishes them today |
 | Command allowlist + admin-only | reuse the MCP stdio treatment |
+| Egress pool + selection policy (§6) | **new**, blocked on §6.5; nothing exists in litellm |
 
 ### Prototype facts worth keeping
 
@@ -570,7 +723,7 @@ From reading `~/docker-compose-services/litellm/`, since re-deriving them is exp
 
 ---
 
-## 7. Dead ends and rejected approaches
+## 8. Dead ends and rejected approaches
 
 Recorded so they are not re-litigated:
 
@@ -589,10 +742,16 @@ Recorded so they are not re-litigated:
 - **A `fleet_settings` DB section.** Dropped with the deleted `MODEL_FLEET.md`. The design no
   longer needs fleet settings to be config-file-free; instance intent is derived from
   configured deployments.
+- **A `vpn-egress` member on `RoutingStrategy`.** Category error: routing strategies select a
+  deployment per request, and egress cannot change after an instance starts (§6.1). The policy
+  belongs to the scheduler.
+- **Pointing instances at the VPN client directly.** Instances bind to a local proxy or
+  interface name instead, so the pool can swap the real endpoint without touching instances
+  (§6.3).
 
 ---
 
-## 8. Suggested build order
+## 9. Suggested build order
 
 Each step independently mergeable. Ordered so the pieces with no dependencies land first.
 
@@ -613,3 +772,8 @@ Each step independently mergeable. Ordered so the pieces with no dependencies la
 
 Steps 1-3 are upstreamable as-is. Steps 4-6 have opinions about the proxy's process lifecycle
 that upstream may not want, which is worth knowing before step 5.
+
+**Egress (§6) is deliberately absent from this order.** It is designed but not started, and
+it should not slot in until §6.5 is answered. If it proceeds, it is its own module with a
+per-deployment `egress_ref`, not part of `litellm/llms/opencode/`, and it lands after the
+supervisor exists since it needs somewhere to bind egresses to instances.
