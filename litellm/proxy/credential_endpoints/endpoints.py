@@ -182,9 +182,7 @@ async def create_credential(
     tags=["credential management"],
 )
 async def validate_credential(
-    request: Request,
     credential: CreateCredentialItem,
-    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
     llm_router: Annotated[litellm.Router | None, Depends(get_llm_router)] = None,
 ):
     """Check a credential against its provider without storing it.
