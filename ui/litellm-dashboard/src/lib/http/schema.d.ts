@@ -3681,6 +3681,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/credentials/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Validate Credential
+         * @description Check a credential against its provider without storing it.
+         *
+         *     Lets the UI prove a key works before the credential is created, so a typo is caught here
+         *     rather than at the first request through a deployment that references it.
+         */
+        post: operations["validate_credential_credentials_validate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/credentials/{credential_name}": {
         parameters: {
             query?: never;
@@ -52706,6 +52729,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+        };
+    };
+    validate_credential_credentials_validate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCredentialItem"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
