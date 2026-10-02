@@ -53,6 +53,41 @@ def _credential_exists_detail(credential_name: str) -> str:
     )
 
 
+def _verify_provider_credential(credential: CredentialItem) -> None:
+    """Reject a credential the provider would refuse, before it is stored.
+
+    Storing an unchecked key leaves the operator with a deployment that looks configured and
+    fails on every request, which is worse than a rejected credential. Only providers that
+    implement `verify_credential` are checked, so this is a no-op everywhere else.
+    """
+    provider: Final = credential.credential_info.get("custom_llm_provider") if credential.credential_info else None
+    if not isinstance(provider, str) or not provider:
+        return
+
+    from litellm.types.utils import LlmProviders
+    from litellm.utils import ProviderConfigManager
+
+    try:
+        provider_enum: Final = LlmProviders(provider)
+    except ValueError:
+        # An unknown or aliased provider slug has no config to validate against.
+        return
+
+    config: Final = ProviderConfigManager.get_provider_chat_config(provider=provider_enum, model="")
+    verify = getattr(config, "verify_credential", None)
+    if verify is None:
+        return
+
+    api_key: Final = credential.credential_values.get("api_key")
+    if not isinstance(api_key, str) or not api_key:
+        return
+
+    api_base: Final = credential.credential_values.get("api_base")
+    failure: Final = verify(api_key, api_base if isinstance(api_base, str) else None)
+    if failure is not None:
+        raise HTTPException(status_code=400, detail={"error": failure})
+
+
 def get_llm_router() -> litellm.Router | None:
     from litellm.proxy.proxy_server import llm_router
 
@@ -113,6 +148,7 @@ async def create_credential(
             credential_values=_CREDENTIAL_DICT_ADAPTER.validate_python(credential_values),
             credential_info=credential.credential_info,
         )
+        _verify_provider_credential(processed_credential)
         encrypted_credential: Final = CredentialHelperUtils.encrypt_credential_values(processed_credential)
         credentials_dict: Final = encrypted_credential.model_dump()
         credentials_dict_jsonified: Final = cast(  # cast-ok: deep-copies a model_dump, so keys are str
@@ -135,6 +171,47 @@ async def create_credential(
         CredentialAccessor.upsert_credentials([processed_credential])
 
         return {"success": True, "message": "Credential created successfully"}
+    except Exception as e:
+        verbose_proxy_logger.exception(e)
+        raise handle_exception_on_proxy(e)
+
+
+@router.post(
+    "/credentials/validate",
+    dependencies=[Depends(user_api_key_auth)],
+    tags=["credential management"],
+)
+async def validate_credential(
+    request: Request,
+    credential: CreateCredentialItem,
+    user_api_key_dict: UserAPIKeyAuth = Depends(user_api_key_auth),
+    llm_router: Annotated[litellm.Router | None, Depends(get_llm_router)] = None,
+):
+    """Check a credential against its provider without storing it.
+
+    Lets the UI prove a key works before the credential is created, so a typo is caught here
+    rather than at the first request through a deployment that references it.
+    """
+    try:
+        credential_values: Final = (
+            _resolve_deployment_credentials(llm_router, credential.model_id)
+            if credential.model_id
+            else credential.credential_values
+        )
+        if credential_values is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Credential values are required. Unable to infer credential values from model ID.",
+            )
+        candidate: Final = CredentialItem(
+            credential_name=credential.credential_name,
+            credential_values=_CREDENTIAL_DICT_ADAPTER.validate_python(credential_values),
+            credential_info=credential.credential_info,
+        )
+        _verify_provider_credential(candidate)
+        return {"valid": True, "message": "Credential is valid for this provider."}
+    except HTTPException:
+        raise
     except Exception as e:
         verbose_proxy_logger.exception(e)
         raise handle_exception_on_proxy(e)
@@ -359,6 +436,9 @@ async def update_credential(
             ),
         )
         merged_credential: Final = update_db_credential(db_credential, patch)
+        # Rotating a key is the moment a bad one is most likely to be typed, so the same check
+        # the create path runs applies here.
+        _verify_provider_credential(merged_credential)
         credential_object_jsonified: Final = cast(  # cast-ok: deep-copies a model_dump, so keys are str
             "dict[str, object]", jsonify_object(merged_credential.model_dump())
         )

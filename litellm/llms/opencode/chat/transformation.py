@@ -44,6 +44,9 @@ class OpenCodeChatConfig(OpenAIGPTConfig):
     provider carries no per-request translation of its own beyond dropping the account segment.
     """
 
+    # Cheapest model that answers a direct call. Used to prove a credential is live.
+    PROBE_MODEL: Final = "space-bunny-free"
+
     @property
     def custom_llm_provider(self) -> str:
         return "opencode"
@@ -99,30 +102,52 @@ class OpenCodeChatConfig(OpenAIGPTConfig):
         return request
 
     def get_models(self, api_key: str | None = None, api_base: str | None = None) -> list[str]:
-        """List the account's models from Zen's OpenAI-shaped `/v1/models`.
+        """List the models Zen serves from its OpenAI-shaped `/v1/models`.
 
         The parent implementation rebuilds the URL from scheme and host only, which drops the
         `/zen` path segment and would query a host root that does not exist, so the path is
         appended to the configured base instead.
+
+        Note this endpoint is unauthenticated: it answers 200 to a wrong key and to no key at
+        all, so a successful listing says nothing about whether a credential is valid. Use
+        `verify_credential` for that.
         """
         resolved_base: Final = self.get_api_base(api_base)
-        resolved_key: Final = self.get_api_key(api_key)
-
-        if resolved_key is None:
-            raise ValueError(
-                "OPENCODE_API_KEY is not set, so the OpenCode model list cannot be read. Attach a credential "
-                "holding the account key, or set the environment variable."
-            )
-
         response: Final = litellm.module_level_client.get(
             url=f"{resolved_base.rstrip('/')}{_ZEN_MODELS_PATH}",
-            headers={"Authorization": f"Bearer {resolved_key}"},
         )
         if response.status_code != 200:
             raise ValueError(f"Failed to list OpenCode models. Status code: {response.status_code}")
 
         entries: Final = response.json().get("data", [])
         return [str(entry["id"]) for entry in entries if isinstance(entry, Mapping) and "id" in entry]
+
+    def verify_credential(self, api_key: str, api_base: str | None = None) -> str | None:
+        """Check the key against a real completion and return an error message, or None when good.
+
+        `GET /models` cannot do this job: it is unauthenticated and answers 200 to any key,
+        including none at all. Only a completion rejects a bad key, so this sends the smallest
+        request that gets an answer. `space-bunny-free` is free and is the one free model that
+        accepts a direct call, the rest refuse outside the OpenCode client, which would make
+        them useless as a liveness probe.
+        """
+        try:
+            litellm.completion(
+                model=self.PROBE_MODEL,
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=1,
+                api_key=api_key,
+                api_base=self.get_api_base(api_base),
+                custom_llm_provider="opencode",
+            )
+        except litellm.AuthenticationError as auth_error:
+            return str(auth_error)
+        except litellm.RateLimitError:
+            # A throttled account still authenticated, which is what this is checking for.
+            return None
+        except Exception as error:
+            return f"Could not reach OpenCode with this key: {error}"
+        return None
 
     def get_supported_openai_params(self, model: str) -> list:
         inherited: Final = tuple(super().get_supported_openai_params(model))

@@ -112,7 +112,7 @@ def test_two_accounts_resolve_to_distinct_deployments() -> None:
     assert all(get_llm_provider(name)[1] == "opencode" for name in names)
 
 
-def test_get_models_reads_the_account_model_list(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_models_reads_the_zend_model_list(monkeypatch: pytest.MonkeyPatch) -> None:
     """Zen serves an OpenAI-shaped model list, and the path must keep its /zen segment, which the
     inherited implementation drops by rebuilding the URL from scheme and host only."""
     captured: Final = {}
@@ -126,7 +126,7 @@ def test_get_models_reads_the_account_model_list(monkeypatch: pytest.MonkeyPatch
 
     class _Client:
         @staticmethod
-        def get(url: str, headers: dict) -> _Response:
+        def get(url: str, headers: dict | None = None) -> _Response:
             captured["url"] = url
             captured["headers"] = headers
             return _Response()
@@ -136,5 +136,4 @@ def test_get_models_reads_the_account_model_list(monkeypatch: pytest.MonkeyPatch
     models: Final = OpenCodeChatConfig().get_models(api_key="secret")
 
     assert captured["url"] == f"{OPENCODE_ZEN_BASE_URL}/models"
-    assert captured["headers"] == {"Authorization": "Bearer secret"}
     assert models == ["big-pickle", "gpt-5"]

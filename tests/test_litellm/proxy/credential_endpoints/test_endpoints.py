@@ -330,3 +330,95 @@ def test_update_credential_still_accepts_a_body_without_credential_values(creden
     written = update_by_name.await_args.kwargs["data"]
     assert json.loads(written["credential_info"]) == {"custom_llm_provider": "openai"}
     assert set(json.loads(written["credential_values"])) == {"api_key"}, "stored values survive an info-only patch"
+
+
+def test_create_credential_refuses_a_key_the_provider_rejects(credential_store):
+    """A bad key used to be stored silently, leaving a deployment that looks configured and
+    fails on every request. The provider is asked first and its refusal is returned as a 400,
+    and nothing reaches the repository."""
+    create = AsyncMock()
+    credential_store(create=create)
+    with patch(
+        "litellm.llms.opencode.chat.transformation.OpenCodeChatConfig.verify_credential",
+        return_value="Invalid API key.",
+    ) as provider_verify:
+        response = _call_as_admin(
+            "POST",
+            "/credentials",
+            {
+                "credential_name": "opencode-bad",
+                "credential_info": {"custom_llm_provider": "opencode"},
+                "credential_values": {"api_key": "sk-wrong"},
+            },
+        )
+
+    assert response.status_code == 400
+    assert "Invalid API key." in response.text
+    assert create.await_count == 0
+    provider_verify.assert_called_once()
+
+
+def test_create_credential_stores_a_key_the_provider_accepts(credential_store):
+    create = AsyncMock()
+    credential_store(create=create)
+    with patch(
+        "litellm.llms.opencode.chat.transformation.OpenCodeChatConfig.verify_credential",
+        return_value=None,
+    ):
+        response = _call_as_admin(
+            "POST",
+            "/credentials",
+            {
+                "credential_name": "opencode-good",
+                "credential_info": {"custom_llm_provider": "opencode"},
+                "credential_values": {"api_key": "sk-good"},
+            },
+        )
+
+    assert response.status_code == 200
+    assert create.await_count == 1
+
+
+def test_validate_endpoint_reports_a_bad_key_without_storing_it(credential_store):
+    """The UI needs to prove a key before creating the credential, so nothing may be written."""
+    create = AsyncMock()
+    credential_store(create=create)
+    with patch(
+        "litellm.llms.opencode.chat.transformation.OpenCodeChatConfig.verify_credential",
+        return_value="Invalid API key.",
+    ):
+        response = _call_as_admin(
+            "POST",
+            "/credentials/validate",
+            {
+                "credential_name": "opencode-bad",
+                "credential_info": {"custom_llm_provider": "opencode"},
+                "credential_values": {"api_key": "sk-wrong"},
+            },
+        )
+
+    assert response.status_code == 400
+    assert "Invalid API key." in response.text
+    assert create.await_count == 0
+
+
+def test_validate_endpoint_confirms_a_good_key_without_storing_it(credential_store):
+    create = AsyncMock()
+    credential_store(create=create)
+    with patch(
+        "litellm.llms.opencode.chat.transformation.OpenCodeChatConfig.verify_credential",
+        return_value=None,
+    ):
+        response = _call_as_admin(
+            "POST",
+            "/credentials/validate",
+            {
+                "credential_name": "opencode-good",
+                "credential_info": {"custom_llm_provider": "opencode"},
+                "credential_values": {"api_key": "sk-good"},
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["valid"] is True
+    assert create.await_count == 0
